@@ -1,0 +1,5 @@
+{
+    "port": 8000,
+    "gameExecutablePath": "C:\\Path\\To\\Game\\PackagedGame.exe",
+    "gameDirectory": "C:\\Path\\To\\Game"
+}
