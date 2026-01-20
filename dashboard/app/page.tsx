@@ -43,10 +43,28 @@ export default function Dashboard() {
   const fetchData = async () => {
     try {
       setLoading(true)
-      const response = await fetch("http://localhost:90/api/status")
-      if (response.ok) {
-        const data: StatusResponse = await response.json()
-        setServers(data.servers)
+      const [statusRes, versionRes] = await Promise.all([
+        fetch("http://localhost:90/api/status"),
+        fetch("http://localhost:90/api/game/version")
+      ]);
+
+      if (statusRes.ok) {
+        const statusData: StatusResponse = await statusRes.json()
+        let updatedServers = statusData.servers;
+
+        if (versionRes.ok) {
+          const versionData = await versionRes.json();
+          // Merge version data based on IP
+          updatedServers = updatedServers.map(server => {
+            const versionInfo = versionData.results.find((r: any) => r.ip === server.address); // Note: Matchmaker broadcast uses IP
+            return {
+              ...server,
+              version: versionInfo?.data?.version || 'Unknown'
+            };
+          });
+        }
+
+        setServers(updatedServers)
         setLastUpdated(new Date())
       } else {
         console.error("Failed to fetch status")
@@ -58,20 +76,7 @@ export default function Dashboard() {
     }
   }
 
-  const fetchVersions = async () => {
-    try {
-      toast("Checking versions...");
-      const response = await fetch("http://localhost:90/api/game/version");
-      if (response.ok) {
-        const data = await response.json();
-        // In a real app we would merge this into the 'servers' state based on IP
-        // seeing as the broadcast returns results keyed by IP
-        toast("Version check complete", { description: JSON.stringify(data.results) });
-      }
-    } catch (error) {
-      toast.error("Failed to check version");
-    }
-  }
+  // fetchVersions removed as it is now integrated into fetchData
 
   const handleUpload = async () => {
     if (!file) {
@@ -182,9 +187,7 @@ export default function Dashboard() {
                 <Button onClick={() => handleCommand("stop")} variant="destructive">
                   <Square className="h-4 w-4 mr-2" /> Stop Game
                 </Button>
-                <Button onClick={fetchVersions} variant="outline">
-                  <Info className="h-4 w-4 mr-2" /> Check Versions
-                </Button>
+                {/* Check Versions button removed */}
               </div>
             </div>
           </div>
@@ -220,13 +223,14 @@ export default function Dashboard() {
                   <TableHead>Port</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Connected Players</TableHead>
+                  <TableHead>Installed Version</TableHead>
                   <TableHead>Last Ping</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {servers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="h-24 text-center">
+                    <TableCell colSpan={6} className="h-24 text-center">
                       No servers connected.
                     </TableCell>
                   </TableRow>
@@ -241,6 +245,7 @@ export default function Dashboard() {
                         </Badge>
                       </TableCell>
                       <TableCell>{server.numConnectedClients}</TableCell>
+                      <TableCell>{server.version || '-'}</TableCell>
                       <TableCell>
                         {new Date(server.lastPingReceived).toLocaleTimeString()}
                       </TableCell>

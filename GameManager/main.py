@@ -8,6 +8,7 @@ import json
 import zipfile
 import subprocess
 import logging
+import pefile
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -51,10 +52,23 @@ def get_process_id() -> int | None:
 
 @app.get("/version")
 def get_version():
-    """Returns the 'version' of the game (currently the directory name)."""
-    if not GAME_DIRECTORY or not os.path.exists(GAME_DIRECTORY):
-        return {"version": "Unknown", "status": "Directory Not Found"}
-    return {"version": os.path.basename(os.path.normpath(GAME_DIRECTORY)), "status": "Installed"}
+    """Returns the version from the game executable."""
+    if not GAME_EXECUTABLE or not os.path.exists(GAME_EXECUTABLE):
+        return {"version": "Unknown", "status": "Executable Not Found"}
+    
+    try:
+        pe = pefile.PE(GAME_EXECUTABLE)
+        if not hasattr(pe, 'VS_FIXEDFILEINFO'):
+             return {"version": "Unknown", "status": "No Version Info"}
+        
+        ver_info = pe.VS_FIXEDFILEINFO[0]
+        file_ver = f"{ver_info.FileVersionMS >> 16}.{ver_info.FileVersionMS & 0xFFFF}.{ver_info.FileVersionLS >> 16}.{ver_info.FileVersionLS & 0xFFFF}"
+        product_ver = f"{ver_info.ProductVersionMS >> 16}.{ver_info.ProductVersionMS & 0xFFFF}.{ver_info.ProductVersionLS >> 16}.{ver_info.ProductVersionLS & 0xFFFF}"
+        
+        return {"version": file_ver, "product_version": product_ver, "status": "Installed"}
+    except Exception as e:
+        logger.error(f"Failed to read version: {e}")
+        return {"version": "Error", "status": str(e)}
 
 @app.post("/upload")
 async def upload_game(file: UploadFile = File(...)):

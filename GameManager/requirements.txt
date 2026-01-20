@@ -2,3 +2,4 @@ fastapi
 uvicorn
 psutil
 python-multipart
+pefile
