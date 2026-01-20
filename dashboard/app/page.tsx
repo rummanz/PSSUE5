@@ -44,8 +44,8 @@ export default function Dashboard() {
     try {
       setLoading(true)
       const [statusRes, versionRes] = await Promise.all([
-        fetch("http://localhost:90/api/status"),
-        fetch("http://localhost:90/api/game/version")
+        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/status`),
+        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/version`)
       ]);
 
       if (statusRes.ok) {
@@ -90,7 +90,7 @@ export default function Dashboard() {
       const formData = new FormData()
       formData.append("file", file)
 
-      const response = await axios.post("http://localhost:90/api/game/upload", formData, {
+      const response = await axios.post(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/upload`, formData, {
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total) {
             const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
@@ -117,7 +117,7 @@ export default function Dashboard() {
 
   const handleCommand = async (command: "start" | "stop") => {
     try {
-      const response = await fetch("http://localhost:90/api/game/broadcast", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/broadcast`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command }),
