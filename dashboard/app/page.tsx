@@ -26,6 +26,8 @@ interface ServerStatus {
   numConnectedClients: number
   lastPingReceived: number
   version?: string
+  pid?: number | null
+  is_running?: boolean
 }
 
 interface StatusResponse {
@@ -56,10 +58,12 @@ export default function Dashboard() {
           const versionData = await versionRes.json();
           // Merge version data based on IP
           updatedServers = updatedServers.map(server => {
-            const versionInfo = versionData.results.find((r: any) => r.ip === server.address); // Note: Matchmaker broadcast uses IP
+            const gameInfo = versionData.results.find((r: any) => r.ip === server.address);
             return {
               ...server,
-              version: versionInfo?.data?.version || 'Unknown'
+              version: gameInfo?.data?.version || 'Unknown',
+              pid: gameInfo?.data?.pid || null,
+              is_running: gameInfo?.data?.is_running || false
             };
           });
         }
@@ -75,8 +79,6 @@ export default function Dashboard() {
       setLoading(false)
     }
   }
-
-  // fetchVersions removed as it is now integrated into fetchData
 
   const handleUpload = async () => {
     if (!file) {
@@ -107,7 +109,7 @@ export default function Dashboard() {
         toast.error("Upload failed")
       }
     } catch (error) {
-      toast.error("Error during upload")
+      toast.error("Error during upload", { description: error instanceof Error ? error.message : "Possible zip validation failure" })
       console.error(error)
     } finally {
       setUploading(false)
@@ -128,6 +130,7 @@ export default function Dashboard() {
         toast.success(`Game ${command} command sent`, {
           description: `Sent to ${data.results.length} servers`
         })
+        fetchData(); // Update UI immediately
       } else {
         toast.error(`Failed to send ${command} command`)
       }
@@ -179,16 +182,18 @@ export default function Dashboard() {
             </div>
 
             <div className="space-y-4">
-              <Label>Process Control</Label>
+              <Label>Process Control (Broadcast All)</Label>
               <div className="flex gap-2">
                 <Button onClick={() => handleCommand("start")} variant="default">
-                  <Play className="h-4 w-4 mr-2" /> Start Game
+                  <Play className="h-4 w-4 mr-2" /> Start All
                 </Button>
                 <Button onClick={() => handleCommand("stop")} variant="destructive">
-                  <Square className="h-4 w-4 mr-2" /> Stop Game
+                  <Square className="h-4 w-4 mr-2" /> Stop All
                 </Button>
-                {/* Check Versions button removed */}
               </div>
+              <p className="text-sm text-muted-foreground">
+                Controls apply to all connected Game VMs. See table below for individual process status.
+              </p>
             </div>
           </div>
         </CardContent>
@@ -221,8 +226,9 @@ export default function Dashboard() {
                 <TableRow>
                   <TableHead>Address</TableHead>
                   <TableHead>Port</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Signalling Status</TableHead>
                   <TableHead>Connected Players</TableHead>
+                  <TableHead>Game Process</TableHead>
                   <TableHead>Installed Version</TableHead>
                   <TableHead>Last Ping</TableHead>
                 </TableRow>
@@ -230,7 +236,7 @@ export default function Dashboard() {
               <TableBody>
                 {servers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-24 text-center">
+                    <TableCell colSpan={7} className="h-24 text-center">
                       No servers connected.
                     </TableCell>
                   </TableRow>
@@ -240,11 +246,19 @@ export default function Dashboard() {
                       <TableCell className="font-medium">{server.address}</TableCell>
                       <TableCell>{server.port}</TableCell>
                       <TableCell>
-                        <Badge variant={server.ready ? "default" : "destructive"}>
-                          {server.ready ? "Ready" : "Busy"}
+                        <Badge variant={server.ready ? "default" : "secondary"}>
+                          {server.ready ? "Ready" : "Busy/Init"}
                         </Badge>
                       </TableCell>
                       <TableCell>{server.numConnectedClients}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={server.is_running ? "outline" : "destructive"} className={server.is_running ? "border-green-500 text-green-500" : ""}>
+                            {server.is_running ? "Running" : "Stopped"}
+                          </Badge>
+                          {server.pid && <span className="font-mono text-xs">PID: {server.pid}</span>}
+                        </div>
+                      </TableCell>
                       <TableCell>{server.version || '-'}</TableCell>
                       <TableCell>
                         {new Date(server.lastPingReceived).toLocaleTimeString()}
