@@ -9,6 +9,8 @@ import zipfile
 import subprocess
 import logging
 import pefile
+import sqlite3
+import datetime
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,6 +38,78 @@ app.add_middleware(
 GAME_EXECUTABLE = config.get("gameExecutablePath", "")
 GAME_DIRECTORY = config.get("gameDirectory", "")
 
+# Initialize Database
+DB_FILE = "stats.db"
+
+def init_db():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                start_time TIMESTAMP,
+                last_seen TIMESTAMP,
+                end_time TIMESTAMP,
+                duration INTEGER
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+
+init_db()
+
+def log_session_start():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        now = datetime.datetime.now()
+        cursor.execute('INSERT INTO sessions (start_time, last_seen) VALUES (?, ?)', (now, now))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to log session start: {e}")
+
+def log_session_heartbeat(pid):
+    # We update the latest 'open' session (end_time IS NULL)
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        now = datetime.datetime.now()
+        # Update last_seen for the most recent active session
+        cursor.execute('''
+            UPDATE sessions 
+            SET last_seen = ? 
+            WHERE id = (SELECT id FROM sessions WHERE end_time IS NULL ORDER BY start_time DESC LIMIT 1)
+        ''', (now,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to log heartbeat: {e}")
+
+def log_session_stop():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        now = datetime.datetime.now()
+        # Find latest active session
+        cursor.execute('SELECT id, start_time, last_seen FROM sessions WHERE end_time IS NULL ORDER BY start_time DESC LIMIT 1')
+        row = cursor.fetchone()
+        if row:
+            session_id, start_str, last_seen_str = row
+            # Calculate duration
+            # SQLite stores timestamps as strings usually, need parsing if not using adapter
+            start_time = datetime.datetime.fromisoformat(start_str) if isinstance(start_str, str) else start_str
+            duration = (now - start_time).total_seconds()
+            
+            cursor.execute('UPDATE sessions SET end_time = ?, duration = ? WHERE id = ?', (now, int(duration), session_id))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to log session stop: {e}")
+
 def get_process_id() -> int | None:
     """Finds the PID of the running game process."""
     if not GAME_EXECUTABLE:
@@ -49,6 +123,33 @@ def get_process_id() -> int | None:
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             pass
     return None
+
+@app.get("/stats")
+def get_stats():
+    """Returns aggregated session statistics."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Total sessions
+        cursor.execute('SELECT COUNT(*) FROM sessions')
+        total_sessions = cursor.fetchone()[0]
+        
+        # Total duration
+        cursor.execute('SELECT SUM(duration) FROM sessions WHERE duration IS NOT NULL')
+        total_duration = cursor.fetchone()[0] or 0
+        
+        # Average duration
+        avg_duration = total_duration / total_sessions if total_sessions > 0 else 0
+        
+        return {
+            "total_sessions": total_sessions,
+            "total_duration_seconds": total_duration,
+            "average_session_duration_seconds": avg_duration
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch stats: {e}")
+        return {"error": str(e)}
 
 @app.get("/version")
 def get_version():
@@ -67,6 +168,7 @@ def get_version():
         response["pid"] = pid
         response["is_running"] = True
         response["status"] = "Running"
+        log_session_heartbeat(pid)
     else:
         response["status"] = "Stopped"
 
@@ -96,8 +198,7 @@ def get_version():
 async def upload_game(file: UploadFile = File(...)):
     """Receives a zip file, smart-extracts it, and replaces the game files."""
     try:
-        # Stop game if running
-        stop_game()
+        # Note: We do NOT stop the game here yet. We stop after upload, before extract.
         
         zip_path = "uploaded_game.zip"
         with open(zip_path, "wb") as buffer:
@@ -106,6 +207,9 @@ async def upload_game(file: UploadFile = File(...)):
         if not zipfile.is_zipfile(zip_path):
              os.remove(zip_path)
              raise HTTPException(status_code=400, detail="Uploaded file is not a valid zip archive.")
+
+        # Stop game if running BEFORE wiping/extracting
+        stop_game()
 
         # Wipe existing directory
         if os.path.exists(GAME_DIRECTORY):
@@ -166,9 +270,9 @@ async def upload_game(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Upload failed: {str(e)}")
         if os.path.exists("uploaded_game.zip"):
-            try:
+             try:
                 os.remove("uploaded_game.zip")
-            except:
+             except:
                 pass
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -194,10 +298,10 @@ def start_game():
             "-ForceRes",
             "-notexturestreaming"
         ]
-        # Allow extra raw args if needed, but for now strict list
         
         # Start non-blocking
         subprocess.Popen(args)
+        log_session_start()
         return {"message": "Game started"}
     except Exception as e:
         logger.error(f"Failed to start game: {str(e)}")
@@ -217,6 +321,8 @@ def stop_game():
              process.wait(timeout=5)
         except psutil.TimeoutExpired:
              process.kill() # Force kill if stuck
+        
+        log_session_stop()
         return {"message": "Game stopped"}
     except Exception as e:
          logger.error(f"Failed to stop game: {str(e)}")

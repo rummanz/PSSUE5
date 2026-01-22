@@ -28,6 +28,11 @@ interface ServerStatus {
   version?: string
   pid?: number | null
   is_running?: boolean
+  stats?: {
+    total_sessions: number
+    total_duration_seconds: number
+    average_session_duration_seconds: number
+  }
 }
 
 interface StatusResponse {
@@ -45,28 +50,40 @@ export default function Dashboard() {
   const fetchData = async () => {
     try {
       setLoading(true)
-      const [statusRes, versionRes] = await Promise.all([
+      const [statusRes, versionRes, statsRes] = await Promise.all([
         fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/status`),
-        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/version`)
+        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/version`),
+        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats`) // This endpoint was added to matchmaker.js
       ]);
 
       if (statusRes.ok) {
         const statusData: StatusResponse = await statusRes.json()
         let updatedServers = statusData.servers;
 
+        let versionResults: any[] = [];
         if (versionRes.ok) {
-          const versionData = await versionRes.json();
-          // Merge version data based on IP
-          updatedServers = updatedServers.map(server => {
-            const gameInfo = versionData.results.find((r: any) => r.ip === server.address);
-            return {
-              ...server,
-              version: gameInfo?.data?.version || 'Unknown',
-              pid: gameInfo?.data?.pid || null,
-              is_running: gameInfo?.data?.is_running || false
-            };
-          });
+          const vData = await versionRes.json();
+          versionResults = vData.results || [];
         }
+
+        let statsResults: any[] = [];
+        if (statsRes.ok) {
+          const sData = await statsRes.json();
+          statsResults = sData.results || [];
+        }
+
+        updatedServers = updatedServers.map((server: ServerStatus) => {
+          const vInfo = versionResults.find((r: any) => r.ip === server.address);
+          const sInfo = statsResults.find((r: any) => r.ip === server.address);
+
+          return {
+            ...server,
+            version: vInfo?.data?.version || 'Unknown',
+            pid: vInfo?.data?.pid || null,
+            is_running: vInfo?.data?.is_running || false,
+            stats: sInfo?.data || null
+          };
+        });
 
         setServers(updatedServers)
         setLastUpdated(new Date())
@@ -79,6 +96,16 @@ export default function Dashboard() {
       setLoading(false)
     }
   }
+
+  // Calculate global states
+  const allRunning = servers.length > 0 && servers.every(s => s.is_running);
+  const allStopped = servers.length > 0 && servers.every(s => !s.is_running);
+
+  // Stats aggregation
+  const totalSessions = servers.reduce((acc, s) => acc + (s.stats?.total_sessions || 0), 0);
+  const globalTotalDuration = servers.reduce((acc, s) => acc + (s.stats?.total_duration_seconds || 0), 0);
+  const globalAvgDuration = totalSessions > 0 ? globalTotalDuration / totalSessions : 0;
+
 
   const handleUpload = async () => {
     if (!file) {
@@ -184,16 +211,47 @@ export default function Dashboard() {
             <div className="space-y-4">
               <Label>Process Control (Broadcast All)</Label>
               <div className="flex gap-2">
-                <Button onClick={() => handleCommand("start")} variant="default">
+                <Button
+                  onClick={() => handleCommand("start")}
+                  variant="default"
+                  disabled={allRunning}
+                >
                   <Play className="h-4 w-4 mr-2" /> Start All
                 </Button>
-                <Button onClick={() => handleCommand("stop")} variant="destructive">
+                <Button
+                  onClick={() => handleCommand("stop")}
+                  variant="destructive"
+                  disabled={allStopped}
+                >
                   <Square className="h-4 w-4 mr-2" /> Stop All
                 </Button>
               </div>
               <p className="text-sm text-muted-foreground">
-                Controls apply to all connected Game VMs. See table below for individual process status.
+                {allRunning ? "All servers are running." : allStopped ? "All servers are stopped." : "Mixed server states."}
               </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Stats Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Game Statistics (Lifetime)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="flex flex-col">
+              <span className="text-sm text-muted-foreground">Total Sessions Played</span>
+              <span className="text-2xl font-bold">{totalSessions}</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-sm text-muted-foreground">Avg Session Duration</span>
+              <span className="text-2xl font-bold">{globalAvgDuration.toFixed(1)}s</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-sm text-muted-foreground">Total Playtime</span>
+              <span className="text-2xl font-bold">{(globalTotalDuration / 3600).toFixed(2)} hrs</span>
             </div>
           </div>
         </CardContent>
@@ -226,11 +284,11 @@ export default function Dashboard() {
                 <TableRow>
                   <TableHead>Address</TableHead>
                   <TableHead>Port</TableHead>
-                  <TableHead>Signalling Status</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead>Connected Players</TableHead>
                   <TableHead>Game Process</TableHead>
-                  <TableHead>Installed Version</TableHead>
-                  <TableHead>Last Ping</TableHead>
+                  <TableHead>Sessions</TableHead>
+                  <TableHead>Avg Duration</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -246,8 +304,8 @@ export default function Dashboard() {
                       <TableCell className="font-medium">{server.address}</TableCell>
                       <TableCell>{server.port}</TableCell>
                       <TableCell>
-                        <Badge variant={server.ready ? "default" : "secondary"}>
-                          {server.ready ? "Ready" : "Busy/Init"}
+                        <Badge variant={server.ready ? "default" : "destructive"}>
+                          {server.ready ? "Ready" : "Busy"}
                         </Badge>
                       </TableCell>
                       <TableCell>{server.numConnectedClients}</TableCell>
@@ -259,10 +317,8 @@ export default function Dashboard() {
                           {server.pid && <span className="font-mono text-xs">PID: {server.pid}</span>}
                         </div>
                       </TableCell>
-                      <TableCell>{server.version || '-'}</TableCell>
-                      <TableCell>
-                        {new Date(server.lastPingReceived).toLocaleTimeString()}
-                      </TableCell>
+                      <TableCell>{server.stats?.total_sessions || 0}</TableCell>
+                      <TableCell>{(server.stats?.average_session_duration_seconds || 0).toFixed(0)}s</TableCell>
                     </TableRow>
                   ))
                 )}
@@ -273,7 +329,6 @@ export default function Dashboard() {
       </Card>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {/* Stats Cards */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Servers</CardTitle>

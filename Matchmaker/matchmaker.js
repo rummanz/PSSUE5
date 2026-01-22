@@ -232,6 +232,12 @@ if (enableRESTAPI) {
 		const results = await broadcastToGames('/version', 'GET');
 		res.json({ results: results });
 	});
+
+	app.get('/api/game/stats', cors(), async (req, res) => {
+		console.log('Broadcasting stats request...');
+		const results = await broadcastToGames('/stats', 'GET');
+		res.json({ results: results });
+	});
 }
 
 if (enableRedirectionLinks) {
