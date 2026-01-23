@@ -116,6 +116,20 @@ def log_session_stop():
     except Exception as e:
         logger.error(f"Failed to log session stop: {e}")
 
+def get_process_id() -> int | None:
+    """Finds the PID of the running game process."""
+    if not GAME_EXECUTABLE:
+        return None
+    process_name = os.path.basename(GAME_EXECUTABLE)
+    for proc in psutil.process_iter(['pid', 'name', 'exe']):
+        try:
+             # Check exact path if possible, or fallback to name
+            if proc.info['exe'] == GAME_EXECUTABLE or proc.info['name'] == process_name:
+                return proc.info['pid']
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return None
+
 # Pydantic model for receiving session data
 from pydantic import BaseModel
 
