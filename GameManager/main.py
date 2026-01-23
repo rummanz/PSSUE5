@@ -45,11 +45,22 @@ def init_db():
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
+        # Process sessions (uptime)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 start_time TIMESTAMP,
                 last_seen TIMESTAMP,
+                end_time TIMESTAMP,
+                duration INTEGER
+            )
+        ''')
+        # Player sessions (actual gameplay)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS player_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id TEXT,
+                start_time TIMESTAMP,
                 end_time TIMESTAMP,
                 duration INTEGER
             )
@@ -61,6 +72,7 @@ def init_db():
 
 init_db()
 
+# ... (Previous logging functions for process sessions kept as is) ...
 def log_session_start():
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -73,12 +85,10 @@ def log_session_start():
         logger.error(f"Failed to log session start: {e}")
 
 def log_session_heartbeat(pid):
-    # We update the latest 'open' session (end_time IS NULL)
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         now = datetime.datetime.now()
-        # Update last_seen for the most recent active session
         cursor.execute('''
             UPDATE sessions 
             SET last_seen = ? 
@@ -94,53 +104,68 @@ def log_session_stop():
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         now = datetime.datetime.now()
-        # Find latest active session
-        cursor.execute('SELECT id, start_time, last_seen FROM sessions WHERE end_time IS NULL ORDER BY start_time DESC LIMIT 1')
+        cursor.execute('SELECT id, start_time FROM sessions WHERE end_time IS NULL ORDER BY start_time DESC LIMIT 1')
         row = cursor.fetchone()
         if row:
-            session_id, start_str, last_seen_str = row
-            # Calculate duration
-            # SQLite stores timestamps as strings usually, need parsing if not using adapter
+            session_id, start_str = row
             start_time = datetime.datetime.fromisoformat(start_str) if isinstance(start_str, str) else start_str
             duration = (now - start_time).total_seconds()
-            
             cursor.execute('UPDATE sessions SET end_time = ?, duration = ? WHERE id = ?', (now, int(duration), session_id))
             conn.commit()
         conn.close()
     except Exception as e:
         logger.error(f"Failed to log session stop: {e}")
 
-def get_process_id() -> int | None:
-    """Finds the PID of the running game process."""
-    if not GAME_EXECUTABLE:
-        return None
-    process_name = os.path.basename(GAME_EXECUTABLE)
-    for proc in psutil.process_iter(['pid', 'name', 'exe']):
-        try:
-             # Check exact path if possible, or fallback to name
-            if proc.info['exe'] == GAME_EXECUTABLE or proc.info['name'] == process_name:
-                return proc.info['pid']
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-    return None
+# Pydantic model for receiving session data
+from pydantic import BaseModel
+
+class PlayerSessionData(BaseModel):
+    player_id: str
+    start_time: float # timestamp
+    end_time: float # timestamp
+    duration: float
+
+@app.post("/session")
+def record_player_session(data: PlayerSessionData):
+    """Records a player session sent by the Signalling Server."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        # Convert timestamps to datetime objects
+        start_dt = datetime.datetime.fromtimestamp(data.start_time / 1000.0)
+        end_dt = datetime.datetime.fromtimestamp(data.end_time / 1000.0)
+        
+        cursor.execute('''
+            INSERT INTO player_sessions (player_id, start_time, end_time, duration) 
+            VALUES (?, ?, ?, ?)
+        ''', (data.player_id, start_dt, end_dt, int(data.duration)))
+        
+        conn.commit()
+        conn.close()
+        return {"message": "Session recorded"}
+    except Exception as e:
+        logger.error(f"Failed to record player session: {e}")
+        # Don't throw 500 to caller, just log
+        return {"error": str(e)}
 
 @app.get("/stats")
 def get_stats():
-    """Returns aggregated session statistics."""
+    """Returns aggregated session statistics (Player Sessions)."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
-        # Total sessions
-        cursor.execute('SELECT COUNT(*) FROM sessions')
+        # We now prioritize PLAYER sessions as that's what the user asked for ("game has been played")
+        cursor.execute('SELECT COUNT(*) FROM player_sessions')
         total_sessions = cursor.fetchone()[0]
         
-        # Total duration
-        cursor.execute('SELECT SUM(duration) FROM sessions WHERE duration IS NOT NULL')
+        cursor.execute('SELECT SUM(duration) FROM player_sessions')
         total_duration = cursor.fetchone()[0] or 0
         
-        # Average duration
         avg_duration = total_duration / total_sessions if total_sessions > 0 else 0
+        
+        # Optional: Include process uptime stats in separate fields if needed, 
+        # but for now we map to the existing API structure expected by Dashboard.
         
         return {
             "total_sessions": total_sessions,

@@ -147,12 +147,48 @@ export class SignallingServer {
         Logger.info(`New player connection: %s (%s)`, request.socket.remoteAddress, request.url);
 
         const newPlayer = new PlayerConnection(this, ws, request.socket.remoteAddress);
+        // Track start time
+        const startTime = Date.now();
 
         // add it to the registry and when the transport closes, remove it
         this.playerRegistry.add(newPlayer);
         newPlayer.transport.on('close', () => {
             this.playerRegistry.remove(newPlayer);
             Logger.info(`Player %s (%s) disconnected.`, newPlayer.playerId, request.socket.remoteAddress);
+
+            // Log Session to GameManager
+            const endTime = Date.now();
+            const duration = (endTime - startTime) / 1000;
+            const payload = JSON.stringify({
+                player_id: newPlayer.playerId,
+                start_time: startTime,
+                end_time: endTime,
+                duration: duration
+            });
+
+            // Assuming GameManager is local for now.
+            // Ideally this URL comes from config, but config interface change is heavier.
+            const gmUrl = process.env['GAME_MANAGER_URL'] || 'http://127.0.0.1:8000';
+            try {
+                const url = new URL('/session', gmUrl);
+                const req = http.request(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Content-Length': Buffer.byteLength(payload)
+                    }
+                }, (res) => {
+                    // Ignore response
+                });
+                req.on('error', (e) => {
+                    Logger.info(`Failed to report session to GameManager: ${e.message}`);
+                    // Should be debug but let's see errors for now
+                });
+                req.write(payload);
+                req.end();
+            } catch (err) {
+                Logger.info(`Error reporting session: ${err}`);
+            }
         });
 
         // because peer connection options is a general field with all optional fields
