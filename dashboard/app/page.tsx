@@ -18,7 +18,7 @@ import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { toast } from "sonner"
 import axios from "axios"
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
+import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 
 interface ServerStatus {
   address: string
@@ -44,6 +44,7 @@ interface TimelinePoint {
   date: string
   total_sessions: number
   total_duration_seconds: number
+  total_duration_minutes: number
   average_session_duration_seconds: number
 }
 
@@ -129,6 +130,7 @@ export default function Dashboard() {
               date,
               total_sessions: values.total_sessions,
               total_duration_seconds: values.total_duration_seconds,
+              total_duration_minutes: values.total_duration_seconds / 60,
               average_session_duration_seconds:
                 values.total_sessions > 0 ? values.total_duration_seconds / values.total_sessions : 0
             }));
@@ -355,7 +357,7 @@ export default function Dashboard() {
       <Card>
         <CardHeader>
           <CardTitle>Session Trend (Last 14 Days)</CardTitle>
-          <CardDescription>Aggregated sessions across all connected game servers.</CardDescription>
+          <CardDescription>Aggregated sessions and total session duration across all connected game servers.</CardDescription>
         </CardHeader>
         <CardContent>
           {timelineData.length === 0 ? (
@@ -369,6 +371,10 @@ export default function Dashboard() {
                       <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
                       <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0.05} />
                     </linearGradient>
+                    <linearGradient id="durationGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--chart-2))" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="hsl(var(--chart-2))" stopOpacity={0.05} />
+                    </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis
@@ -376,16 +382,34 @@ export default function Dashboard() {
                     tickFormatter={(value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                     minTickGap={24}
                   />
-                  <YAxis allowDecimals={false} />
+                  <YAxis yAxisId="left" allowDecimals={false} />
+                  <YAxis yAxisId="right" orientation="right" />
                   <Tooltip
-                    formatter={(value: number) => [value, "Sessions"]}
+                    formatter={(value: number, name: string) => {
+                      if (name === "Total Duration (min)") {
+                        return [`${value.toFixed(1)} min`, name]
+                      }
+                      return [value, name]
+                    }}
                     labelFormatter={(label: string) => new Date(label).toLocaleDateString()}
                   />
+                  <Legend />
                   <Area
                     type="monotone"
                     dataKey="total_sessions"
+                    yAxisId="left"
+                    name="Sessions"
                     stroke="hsl(var(--primary))"
                     fill="url(#sessionsGradient)"
+                    strokeWidth={2}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="total_duration_minutes"
+                    yAxisId="right"
+                    name="Total Duration (min)"
+                    stroke="hsl(var(--chart-2))"
+                    fill="url(#durationGradient)"
                     strokeWidth={2}
                   />
                 </AreaChart>
