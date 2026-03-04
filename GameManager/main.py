@@ -11,9 +11,10 @@ import logging
 import pefile
 import sqlite3
 import datetime
+import socket
 
 # Configure Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Load Configuration
@@ -40,6 +41,18 @@ GAME_DIRECTORY = config.get("gameDirectory", "")
 
 # Initialize Database
 DB_FILE = "stats.db"
+
+def get_local_ip() -> str:
+    """Best-effort local IP detection for startup log message."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # No traffic is sent; this is used only to discover the outbound interface IP.
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        sock.close()
 
 def init_db():
     try:
@@ -78,7 +91,8 @@ def log_session_start():
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         now = datetime.datetime.now()
-        cursor.execute('INSERT INTO sessions (start_time, last_seen) VALUES (?, ?)', (now, now))
+        now_str = now.isoformat()
+        cursor.execute('INSERT INTO sessions (start_time, last_seen) VALUES (?, ?)', (now_str, now_str))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -89,11 +103,12 @@ def log_session_heartbeat(pid):
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         now = datetime.datetime.now()
+        now_str = now.isoformat()
         cursor.execute('''
             UPDATE sessions 
             SET last_seen = ? 
             WHERE id = (SELECT id FROM sessions WHERE end_time IS NULL ORDER BY start_time DESC LIMIT 1)
-        ''', (now,))
+        ''', (now_str,))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -104,13 +119,14 @@ def log_session_stop():
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         now = datetime.datetime.now()
+        now_str = now.isoformat()
         cursor.execute('SELECT id, start_time FROM sessions WHERE end_time IS NULL ORDER BY start_time DESC LIMIT 1')
         row = cursor.fetchone()
         if row:
             session_id, start_str = row
             start_time = datetime.datetime.fromisoformat(start_str) if isinstance(start_str, str) else start_str
             duration = (now - start_time).total_seconds()
-            cursor.execute('UPDATE sessions SET end_time = ?, duration = ? WHERE id = ?', (now, int(duration), session_id))
+            cursor.execute('UPDATE sessions SET end_time = ?, duration = ? WHERE id = ?', (now_str, int(duration), session_id))
             conn.commit()
         conn.close()
     except Exception as e:
@@ -148,11 +164,13 @@ def record_player_session(data: PlayerSessionData):
         # Convert timestamps to datetime objects
         start_dt = datetime.datetime.fromtimestamp(data.start_time / 1000.0)
         end_dt = datetime.datetime.fromtimestamp(data.end_time / 1000.0)
+        start_dt_str = start_dt.isoformat()
+        end_dt_str = end_dt.isoformat()
         
         cursor.execute('''
             INSERT INTO player_sessions (player_id, start_time, end_time, duration) 
             VALUES (?, ?, ?, ?)
-        ''', (data.player_id, start_dt, end_dt, int(data.duration)))
+        ''', (data.player_id, start_dt_str, end_dt_str, int(data.duration)))
         
         conn.commit()
         conn.close()
@@ -188,6 +206,62 @@ def get_stats():
         }
     except Exception as e:
         logger.error(f"Failed to fetch stats: {e}")
+        return {"error": str(e)}
+
+@app.get("/stats/timeline")
+def get_stats_timeline(days: int = 14):
+    """Returns daily player-session aggregates for charting."""
+    try:
+        days = max(1, min(days, 90))
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        start_date = (datetime.datetime.now() - datetime.timedelta(days=days - 1)).date().isoformat()
+
+        cursor.execute('''
+            SELECT
+                substr(start_time, 1, 10) AS day,
+                COUNT(*) AS total_sessions,
+                COALESCE(SUM(duration), 0) AS total_duration_seconds
+            FROM player_sessions
+            WHERE substr(start_time, 1, 10) >= ?
+            GROUP BY day
+            ORDER BY day ASC
+        ''', (start_date,))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        by_day = {
+            row[0]: {
+                "total_sessions": int(row[1] or 0),
+                "total_duration_seconds": int(row[2] or 0)
+            }
+            for row in rows
+        }
+
+        timeline = []
+        start_day_dt = datetime.datetime.fromisoformat(start_date).date()
+        for i in range(days):
+            day_str = (start_day_dt + datetime.timedelta(days=i)).isoformat()
+            day_stats = by_day.get(day_str, {"total_sessions": 0, "total_duration_seconds": 0})
+            total_sessions = day_stats["total_sessions"]
+            total_duration_seconds = day_stats["total_duration_seconds"]
+            avg_duration_seconds = (total_duration_seconds / total_sessions) if total_sessions > 0 else 0
+
+            timeline.append({
+                "date": day_str,
+                "total_sessions": total_sessions,
+                "total_duration_seconds": total_duration_seconds,
+                "average_session_duration_seconds": avg_duration_seconds
+            })
+
+        return {
+            "days": days,
+            "timeline": timeline
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch timeline stats: {e}")
         return {"error": str(e)}
 
 @app.get("/version")
@@ -368,4 +442,7 @@ def stop_game():
          raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=config.get("port", 8000))
+    host = "0.0.0.0"
+    port = config.get("port", 8000)
+    print(f"GameManager is running at http://{get_local_ip()}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="error", access_log=False)
