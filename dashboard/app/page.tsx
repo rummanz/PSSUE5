@@ -75,93 +75,100 @@ export default function Dashboard() {
     }, 500)
   }
 
-  const fetchData = async () => {
+  const fetchLiveData = async () => {
     try {
       setLoading(true)
-      const [statusRes, versionRes, statsRes, timelineRes] = await Promise.all([
+      const [statusRes, versionRes, statsRes] = await Promise.all([
         fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/status`),
         fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/version`),
-        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats`),
-        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats/timeline`)
-      ]);
+        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats`)
+      ])
 
       if (statusRes.ok) {
         const statusData: StatusResponse = await statusRes.json()
-        let updatedServers = statusData.servers;
+        let updatedServers = statusData.servers
 
-        let versionResults: any[] = [];
+        let versionResults: any[] = []
         if (versionRes.ok) {
-          const vData = await versionRes.json();
-          versionResults = vData.results || [];
+          const vData = await versionRes.json()
+          versionResults = vData.results || []
         }
 
-        let statsResults: any[] = [];
+        let statsResults: any[] = []
         if (statsRes.ok) {
-          const sData = await statsRes.json();
-          statsResults = sData.results || [];
-        }
-
-        if (timelineRes.ok) {
-          const tData = await timelineRes.json();
-          const timelineResults = tData.results || [];
-
-          const aggregateByDate = new Map<string, { total_sessions: number; total_duration_seconds: number }>();
-
-          for (const result of timelineResults) {
-            if (result.status !== "success" || !result.data?.timeline) continue;
-
-            for (const point of result.data.timeline) {
-              if (!point?.date) continue;
-
-              const existing = aggregateByDate.get(point.date) || {
-                total_sessions: 0,
-                total_duration_seconds: 0
-              };
-
-              existing.total_sessions += Number(point.total_sessions || 0);
-              existing.total_duration_seconds += Number(point.total_duration_seconds || 0);
-              aggregateByDate.set(point.date, existing);
-            }
-          }
-
-          const aggregatedTimeline: TimelinePoint[] = Array.from(aggregateByDate.entries())
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([date, values]) => ({
-              date,
-              total_sessions: values.total_sessions,
-              total_duration_seconds: values.total_duration_seconds,
-              total_duration_minutes: values.total_duration_seconds / 60,
-              average_session_duration_seconds:
-                values.total_sessions > 0 ? values.total_duration_seconds / values.total_sessions : 0
-            }));
-
-          setTimelineData(aggregatedTimeline);
+          const sData = await statsRes.json()
+          statsResults = sData.results || []
         }
 
         updatedServers = updatedServers.map((server: ServerStatus) => {
-          const vInfo = versionResults.find((r: any) => r.ip === server.address);
-          const sInfo = statsResults.find((r: any) => r.ip === server.address);
+          const vInfo = versionResults.find((r: any) => r.ip === server.address)
+          const sInfo = statsResults.find((r: any) => r.ip === server.address)
 
           return {
             ...server,
-            version: vInfo?.data?.version || 'Unknown',
+            version: vInfo?.data?.version || "Unknown",
             pid: vInfo?.data?.pid || null,
             is_running: vInfo?.data?.is_running || false,
             stats: sInfo?.data || null
-          };
-        });
+          }
+        })
 
         setServers(updatedServers)
         setLastUpdated(new Date())
       } else {
         console.error("Failed to fetch status")
-        setTimelineData([])
       }
     } catch (error) {
       console.error("Error fetching status:", error)
-      setTimelineData([])
     } finally {
       setLoading(false)
+    }
+  }
+
+  const fetchTimelineData = async () => {
+    try {
+      const timelineRes = await fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats/timeline`)
+      if (!timelineRes.ok) {
+        setTimelineData([])
+        return
+      }
+
+      const tData = await timelineRes.json()
+      const timelineResults = tData.results || []
+
+      const aggregateByDate = new Map<string, { total_sessions: number; total_duration_seconds: number }>()
+
+      for (const result of timelineResults) {
+        if (result.status !== "success" || !result.data?.timeline) continue
+
+        for (const point of result.data.timeline) {
+          if (!point?.date) continue
+
+          const existing = aggregateByDate.get(point.date) || {
+            total_sessions: 0,
+            total_duration_seconds: 0
+          }
+
+          existing.total_sessions += Number(point.total_sessions || 0)
+          existing.total_duration_seconds += Number(point.total_duration_seconds || 0)
+          aggregateByDate.set(point.date, existing)
+        }
+      }
+
+      const aggregatedTimeline: TimelinePoint[] = Array.from(aggregateByDate.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, values]) => ({
+          date,
+          total_sessions: values.total_sessions,
+          total_duration_seconds: values.total_duration_seconds,
+          total_duration_minutes: values.total_duration_seconds / 60,
+          average_session_duration_seconds:
+            values.total_sessions > 0 ? values.total_duration_seconds / values.total_sessions : 0
+        }))
+
+      setTimelineData(aggregatedTimeline)
+    } catch {
+      setTimelineData([])
     }
   }
 
@@ -245,7 +252,7 @@ export default function Dashboard() {
         toast.success(`Game ${command} command sent`, {
           description: `Sent to ${data.results.length} servers`
         })
-        fetchData(); // Update UI immediately
+        fetchLiveData() // Update UI immediately
       } else {
         toast.error(`Failed to send ${command} command`)
       }
@@ -255,13 +262,89 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    fetchData()
-    const interval = setInterval(fetchData, 5000)
+    fetchTimelineData()
+  }, [])
+
+  useEffect(() => {
+    fetchLiveData()
+    const interval = setInterval(fetchLiveData, 5000)
     return () => clearInterval(interval)
   }, [])
 
   return (
     <div className="container mx-auto py-10 space-y-8">
+
+      {/* Server Status Section */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Matchmaker Dashboard</CardTitle>
+              <CardDescription>Real-time status of Pixel Streaming servers.</CardDescription>
+            </div>
+            <div className="flex items-center gap-4">
+              {lastUpdated && (
+                <span className="text-sm text-muted-foreground">
+                  Updated: {lastUpdated.toLocaleTimeString()}
+                </span>
+              )}
+              <Button variant="outline" size="icon" onClick={fetchLiveData} disabled={loading}>
+                <RefreshCcw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Address</TableHead>
+                  <TableHead>Port</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Connected Players</TableHead>
+                  <TableHead>Game Process</TableHead>
+                  <TableHead>Sessions</TableHead>
+                  <TableHead>Avg Duration</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {servers.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="h-24 text-center">
+                      No servers connected.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  servers.map((server, index) => (
+                    <TableRow key={`${server.address}-${server.port}-${index}`}>
+                      <TableCell className="font-medium">{server.address}</TableCell>
+                      <TableCell>{server.port}</TableCell>
+                      <TableCell>
+                        <Badge variant={server.ready ? "default" : "destructive"}>
+                          {server.ready ? "Ready" : "Busy"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{server.numConnectedClients}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={server.is_running ? "outline" : "destructive"} className={server.is_running ? "border-green-500 text-green-500" : ""}>
+                            {server.is_running ? "Running" : "Stopped"}
+                          </Badge>
+                          {server.pid && <span className="font-mono text-xs">PID: {server.pid}</span>}
+                        </div>
+                      </TableCell>
+                      <TableCell>{server.stats?.total_sessions || 0}</TableCell>
+                      <TableCell>{(server.stats?.average_session_duration_seconds || 0).toFixed(0)}s</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Game Management Section */}
       <Card>
         <CardHeader>
@@ -367,13 +450,13 @@ export default function Dashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={timelineData}>
                   <defs>
-                    <linearGradient id="sessionsGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.05} />
+                    <linearGradient id="fillSessions" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.8} />
+                      <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0.1} />
                     </linearGradient>
-                    <linearGradient id="durationGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--chart-2)" stopOpacity={0.45} />
-                      <stop offset="95%" stopColor="var(--chart-2)" stopOpacity={0.12} />
+                    <linearGradient id="fillDuration" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--chart-2)" stopOpacity={0.8} />
+                      <stop offset="95%" stopColor="var(--chart-2)" stopOpacity={0.1} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
@@ -399,8 +482,8 @@ export default function Dashboard() {
                     dataKey="total_sessions"
                     yAxisId="left"
                     name="Sessions"
-                    stroke="var(--primary)"
-                    fill="url(#sessionsGradient)"
+                    stroke="var(--chart-1)"
+                    fill="url(#fillSessions)"
                     strokeWidth={2}
                   />
                   <Area
@@ -409,85 +492,13 @@ export default function Dashboard() {
                     yAxisId="right"
                     name="Total Duration (min)"
                     stroke="var(--chart-2)"
-                    fill="url(#durationGradient)"
-                    strokeWidth={3}
-                    fillOpacity={0.35}
+                    fill="url(#fillDuration)"
+                    strokeWidth={2}
                   />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Server Status Section */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>Matchmaker Dashboard</CardTitle>
-              <CardDescription>Real-time status of Pixel Streaming servers.</CardDescription>
-            </div>
-            <div className="flex items-center gap-4">
-              {lastUpdated && (
-                <span className="text-sm text-muted-foreground">
-                  Updated: {lastUpdated.toLocaleTimeString()}
-                </span>
-              )}
-              <Button variant="outline" size="icon" onClick={fetchData} disabled={loading}>
-                <RefreshCcw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-              </Button>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Address</TableHead>
-                  <TableHead>Port</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Connected Players</TableHead>
-                  <TableHead>Game Process</TableHead>
-                  <TableHead>Sessions</TableHead>
-                  <TableHead>Avg Duration</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {servers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} className="h-24 text-center">
-                      No servers connected.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  servers.map((server, index) => (
-                    <TableRow key={`${server.address}-${server.port}-${index}`}>
-                      <TableCell className="font-medium">{server.address}</TableCell>
-                      <TableCell>{server.port}</TableCell>
-                      <TableCell>
-                        <Badge variant={server.ready ? "default" : "destructive"}>
-                          {server.ready ? "Ready" : "Busy"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>{server.numConnectedClients}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={server.is_running ? "outline" : "destructive"} className={server.is_running ? "border-green-500 text-green-500" : ""}>
-                            {server.is_running ? "Running" : "Stopped"}
-                          </Badge>
-                          {server.pid && <span className="font-mono text-xs">PID: {server.pid}</span>}
-                        </div>
-                      </TableCell>
-                      <TableCell>{server.stats?.total_sessions || 0}</TableCell>
-                      <TableCell>{(server.stats?.average_session_duration_seconds || 0).toFixed(0)}s</TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
         </CardContent>
       </Card>
 
