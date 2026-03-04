@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   Table,
   TableBody,
@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { toast } from "sonner"
 import axios from "axios"
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 
 interface ServerStatus {
   address: string
@@ -39,21 +40,48 @@ interface StatusResponse {
   servers: ServerStatus[]
 }
 
+interface TimelinePoint {
+  date: string
+  total_sessions: number
+  total_duration_seconds: number
+  average_session_duration_seconds: number
+}
+
 export default function Dashboard() {
   const [servers, setServers] = useState<ServerStatus[]>([])
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadStage, setUploadStage] = useState<"idle" | "uploading" | "processing">("idle")
+  const [timelineData, setTimelineData] = useState<TimelinePoint[]>([])
   const [file, setFile] = useState<File | null>(null)
+  const processingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopProcessingProgress = () => {
+    if (processingIntervalRef.current) {
+      clearInterval(processingIntervalRef.current)
+      processingIntervalRef.current = null
+    }
+  }
+
+  const startProcessingProgress = () => {
+    setUploadStage("processing")
+    setUploadProgress((prev) => (prev < 60 ? 60 : prev))
+    stopProcessingProgress()
+    processingIntervalRef.current = setInterval(() => {
+      setUploadProgress((prev) => (prev < 95 ? prev + 1 : prev))
+    }, 500)
+  }
 
   const fetchData = async () => {
     try {
       setLoading(true)
-      const [statusRes, versionRes, statsRes] = await Promise.all([
+      const [statusRes, versionRes, statsRes, timelineRes] = await Promise.all([
         fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/status`),
         fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/version`),
-        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats`) // This endpoint was added to matchmaker.js
+        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats`),
+        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats/timeline`)
       ]);
 
       if (statusRes.ok) {
@@ -70,6 +98,42 @@ export default function Dashboard() {
         if (statsRes.ok) {
           const sData = await statsRes.json();
           statsResults = sData.results || [];
+        }
+
+        if (timelineRes.ok) {
+          const tData = await timelineRes.json();
+          const timelineResults = tData.results || [];
+
+          const aggregateByDate = new Map<string, { total_sessions: number; total_duration_seconds: number }>();
+
+          for (const result of timelineResults) {
+            if (result.status !== "success" || !result.data?.timeline) continue;
+
+            for (const point of result.data.timeline) {
+              if (!point?.date) continue;
+
+              const existing = aggregateByDate.get(point.date) || {
+                total_sessions: 0,
+                total_duration_seconds: 0
+              };
+
+              existing.total_sessions += Number(point.total_sessions || 0);
+              existing.total_duration_seconds += Number(point.total_duration_seconds || 0);
+              aggregateByDate.set(point.date, existing);
+            }
+          }
+
+          const aggregatedTimeline: TimelinePoint[] = Array.from(aggregateByDate.entries())
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([date, values]) => ({
+              date,
+              total_sessions: values.total_sessions,
+              total_duration_seconds: values.total_duration_seconds,
+              average_session_duration_seconds:
+                values.total_sessions > 0 ? values.total_duration_seconds / values.total_sessions : 0
+            }));
+
+          setTimelineData(aggregatedTimeline);
         }
 
         updatedServers = updatedServers.map((server: ServerStatus) => {
@@ -89,9 +153,11 @@ export default function Dashboard() {
         setLastUpdated(new Date())
       } else {
         console.error("Failed to fetch status")
+        setTimelineData([])
       }
     } catch (error) {
       console.error("Error fetching status:", error)
+      setTimelineData([])
     } finally {
       setLoading(false)
     }
@@ -116,6 +182,7 @@ export default function Dashboard() {
     try {
       setUploading(true)
       setUploadProgress(0)
+      setUploadStage("uploading")
       const formData = new FormData()
       formData.append("file", file)
 
@@ -123,14 +190,25 @@ export default function Dashboard() {
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total) {
             const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-            setUploadProgress(percentCompleted)
+            const mappedUploadProgress = Math.min(60, Math.round(percentCompleted * 0.6))
+            setUploadProgress(mappedUploadProgress)
+            if (percentCompleted >= 100 && uploadStage !== "processing") {
+              startProcessingProgress()
+            }
           }
         }
       })
 
+      stopProcessingProgress()
+      setUploadProgress(100)
+
       if (response.status === 200) {
+        const results = response.data.results || []
+        const successCount = results.filter((r: any) => r.status === "success").length
+        const failedCount = results.filter((r: any) => r.status === "failed").length
+
         toast.success("Upload broadcasted successfully", {
-          description: `Sent to ${response.data.results.length} servers`,
+          description: `Completed: ${successCount} success, ${failedCount} failed`,
         })
       } else {
         toast.error("Upload failed")
@@ -139,10 +217,18 @@ export default function Dashboard() {
       toast.error("Error during upload", { description: error instanceof Error ? error.message : "Possible zip validation failure" })
       console.error(error)
     } finally {
+      stopProcessingProgress()
       setUploading(false)
-      setUploadProgress(0)
+      setUploadStage("idle")
+      setTimeout(() => setUploadProgress(0), 500)
     }
   }
+
+  useEffect(() => {
+    return () => {
+      stopProcessingProgress()
+    }
+  }, [])
 
   const handleCommand = async (command: "start" | "stop") => {
     try {
@@ -204,7 +290,16 @@ export default function Dashboard() {
                 </Button>
               </div>
               {uploading && (
-                <Progress value={uploadProgress} className="w-full h-2" />
+                <>
+                  <Progress value={uploadProgress} className="w-full h-2" />
+                  <p className="text-xs text-muted-foreground">
+                    {uploadStage === "uploading"
+                      ? "Uploading build to Matchmaker..."
+                      : uploadStage === "processing"
+                        ? "Transferring build to game servers and extracting..."
+                        : "Preparing upload..."}
+                  </p>
+                </>
               )}
             </div>
 
@@ -254,6 +349,49 @@ export default function Dashboard() {
               <span className="text-2xl font-bold">{(globalTotalDuration / 3600).toFixed(2)} hrs</span>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Session Trend (Last 14 Days)</CardTitle>
+          <CardDescription>Aggregated sessions across all connected game servers.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {timelineData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No timeline data available yet.</p>
+          ) : (
+            <div className="h-[280px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={timelineData}>
+                  <defs>
+                    <linearGradient id="sessionsGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0.05} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    tickFormatter={(value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                    minTickGap={24}
+                  />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip
+                    formatter={(value: number) => [value, "Sessions"]}
+                    labelFormatter={(label: string) => new Date(label).toLocaleDateString()}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="total_sessions"
+                    stroke="hsl(var(--primary))"
+                    fill="url(#sessionsGradient)"
+                    strokeWidth={2}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </CardContent>
       </Card>
 
