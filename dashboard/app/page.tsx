@@ -27,13 +27,6 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 
 interface ServerStatus {
   address: string
@@ -488,19 +481,16 @@ export default function Dashboard() {
               Showing sessions and average duration for the selected range
             </CardDescription>
           </div>
-          <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
-            <SelectTrigger
-              className="hidden w-[160px] rounded-lg sm:ml-auto sm:flex"
-              aria-label="Select a value"
-            >
-              <SelectValue placeholder="Last 30 days" />
-            </SelectTrigger>
-            <SelectContent className="rounded-xl">
-              <SelectItem value="90d" className="rounded-lg">Last 3 months</SelectItem>
-              <SelectItem value="30d" className="rounded-lg">Last 30 days</SelectItem>
-              <SelectItem value="7d" className="rounded-lg">Last 7 days</SelectItem>
-            </SelectContent>
-          </Select>
+          <select
+            value={timeRange}
+            onChange={(e) => setTimeRange(e.target.value as TimeRange)}
+            aria-label="Select a value"
+            className="border-input bg-background text-foreground hidden h-9 w-[160px] rounded-lg border px-3 text-sm sm:ml-auto sm:flex"
+          >
+            <option value="90d">Last 3 months</option>
+            <option value="30d">Last 30 days</option>
+            <option value="7d">Last 7 days</option>
+          </select>
         </CardHeader>
         <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
           {filteredData.length === 0 ? (

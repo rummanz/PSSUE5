@@ -135,9 +135,9 @@ function ChartTooltipContent({
               )}
               <span className="text-muted-foreground">{itemConfig?.label || item.name}</span>
               <span className="ml-auto font-mono font-medium text-foreground">
-                {formatter
+                {formatter && item.value !== undefined
                   ? formatter(item.value, item.name, item, index, payload)
-                  : item.value?.toLocaleString?.()}
+                  : item.value?.toLocaleString?.() ?? "—"}
               </span>
             </div>
           )
