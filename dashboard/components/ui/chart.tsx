@@ -147,11 +147,12 @@ function ChartTooltipContent({
   )
 }
 
+const RechartsLegend = RechartsPrimitive.Legend as unknown as React.ComponentType<RechartsPrimitive.LegendProps>
+
 function ChartLegend(
   props: RechartsPrimitive.LegendProps
 ) {
-  const LegendComponent = RechartsPrimitive.Legend as React.ComponentType<RechartsPrimitive.LegendProps>
-  return <LegendComponent {...props} />
+  return <RechartsLegend {...props} />
 }
 
 function ChartLegendContent({

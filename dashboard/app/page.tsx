@@ -27,6 +27,13 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 interface ServerStatus {
   address: string
@@ -59,11 +66,11 @@ interface TimelinePoint {
 type TimeRange = "90d" | "30d" | "7d"
 
 const chartConfig = {
-  sessions: {
+  desktop: {
     label: "Sessions",
     color: "var(--chart-1)",
   },
-  duration: {
+  mobile: {
     label: "Avg Duration (min)",
     color: "var(--chart-2)",
   },
@@ -212,8 +219,8 @@ export default function Dashboard() {
       .filter((point) => new Date(point.date) >= cutoff)
       .map((point) => ({
         date: point.date,
-        sessions: point.total_sessions,
-        duration: point.average_session_duration_seconds / 60,
+        desktop: point.total_sessions,
+        mobile: Number((point.average_session_duration_seconds / 60).toFixed(1)),
       }))
   }, [timelineData, timeRange])
 
@@ -481,16 +488,19 @@ export default function Dashboard() {
               Showing sessions and average duration for the selected range
             </CardDescription>
           </div>
-          <select
-            value={timeRange}
-            onChange={(e) => setTimeRange(e.target.value as TimeRange)}
-            aria-label="Select a value"
-            className="border-input bg-background text-foreground hidden h-9 w-[160px] rounded-lg border px-3 text-sm sm:ml-auto sm:flex"
-          >
-            <option value="90d">Last 3 months</option>
-            <option value="30d">Last 30 days</option>
-            <option value="7d">Last 7 days</option>
-          </select>
+          <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
+            <SelectTrigger
+              className="hidden w-[160px] rounded-lg sm:ml-auto sm:flex"
+              aria-label="Select a value"
+            >
+              <SelectValue placeholder="Last 30 days" />
+            </SelectTrigger>
+            <SelectContent className="rounded-xl">
+              <SelectItem value="90d" className="rounded-lg">Last 3 months</SelectItem>
+              <SelectItem value="30d" className="rounded-lg">Last 30 days</SelectItem>
+              <SelectItem value="7d" className="rounded-lg">Last 7 days</SelectItem>
+            </SelectContent>
+          </Select>
         </CardHeader>
         <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
           {filteredData.length === 0 ? (
@@ -502,13 +512,13 @@ export default function Dashboard() {
             >
               <AreaChart data={filteredData}>
                 <defs>
-                  <linearGradient id="fillSessions" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-sessions)" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="var(--color-sessions)" stopOpacity={0.1} />
+                  <linearGradient id="fillDesktop" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-desktop)" stopOpacity={0.8} />
+                    <stop offset="95%" stopColor="var(--color-desktop)" stopOpacity={0.1} />
                   </linearGradient>
-                  <linearGradient id="fillDuration" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-duration)" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="var(--color-duration)" stopOpacity={0.1} />
+                  <linearGradient id="fillMobile" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-mobile)" stopOpacity={0.8} />
+                    <stop offset="95%" stopColor="var(--color-mobile)" stopOpacity={0.1} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid vertical={false} />
@@ -536,28 +546,22 @@ export default function Dashboard() {
                           day: "numeric",
                         })
                       }}
-                      formatter={(value, name) => {
-                        if (name === "Avg Duration (min)") {
-                          return `${Number(value).toFixed(1)} min`
-                        }
-                        return Number(value).toLocaleString()
-                      }}
                       indicator="dot"
                     />
                   }
                 />
                 <Area
-                  dataKey="duration"
+                  dataKey="mobile"
                   type="natural"
-                  fill="url(#fillDuration)"
-                  stroke="var(--color-duration)"
+                  fill="url(#fillMobile)"
+                  stroke="var(--color-mobile)"
                   stackId="a"
                 />
                 <Area
-                  dataKey="sessions"
+                  dataKey="desktop"
                   type="natural"
-                  fill="url(#fillSessions)"
-                  stroke="var(--color-sessions)"
+                  fill="url(#fillDesktop)"
+                  stroke="var(--color-desktop)"
                   stackId="a"
                 />
                 <ChartLegend content={<ChartLegendContent />} />
