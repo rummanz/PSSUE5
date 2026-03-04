@@ -136,7 +136,7 @@ function ChartTooltipContent({
               <span className="text-muted-foreground">{itemConfig?.label || item.name}</span>
               <span className="ml-auto font-mono font-medium text-foreground">
                 {formatter && item.value !== undefined
-                  ? formatter(item.value, item.name, item, index, payload)
+                  ? formatter(item.value, item.name ?? key, item, index, payload)
                   : item.value?.toLocaleString?.() ?? "—"}
               </span>
             </div>
@@ -148,9 +148,10 @@ function ChartTooltipContent({
 }
 
 function ChartLegend(
-  props: React.ComponentProps<typeof RechartsPrimitive.Legend>
+  props: RechartsPrimitive.LegendProps
 ) {
-  return <RechartsPrimitive.Legend {...props} />
+  const LegendComponent = RechartsPrimitive.Legend as React.ComponentType<RechartsPrimitive.LegendProps>
+  return <LegendComponent {...props} />
 }
 
 function ChartLegendContent({
