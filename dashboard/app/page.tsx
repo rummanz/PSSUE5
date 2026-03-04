@@ -490,7 +490,7 @@ export default function Dashboard() {
           </div>
           <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
             <SelectTrigger
-              className="hidden w-[160px] rounded-lg sm:ml-auto sm:flex"
+              className="w-[160px] rounded-lg sm:ml-auto"
               aria-label="Select a value"
             >
               <SelectValue placeholder="Last 30 days" />
@@ -555,14 +555,16 @@ export default function Dashboard() {
                   type="natural"
                   fill="url(#fillMobile)"
                   stroke="var(--color-mobile)"
-                  stackId="a"
+                  fillOpacity={0.55}
+                  strokeWidth={2}
                 />
                 <Area
                   dataKey="desktop"
                   type="natural"
                   fill="url(#fillDesktop)"
                   stroke="var(--color-desktop)"
-                  stackId="a"
+                  fillOpacity={0.45}
+                  strokeWidth={2}
                 />
                 <ChartLegend content={<ChartLegendContent />} />
               </AreaChart>
