@@ -238,6 +238,12 @@ if (enableRESTAPI) {
 		const results = await broadcastToGames('/stats', 'GET');
 		res.json({ results: results });
 	});
+
+	app.get('/api/game/stats/timeline', cors(), async (req, res) => {
+		console.log('Broadcasting timeline stats request...');
+		const results = await broadcastToGames('/stats/timeline', 'GET');
+		res.json({ results: results });
+	});
 }
 
 if (enableRedirectionLinks) {
