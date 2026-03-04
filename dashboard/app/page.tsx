@@ -11,22 +11,19 @@ import {
 } from "@/components/ui/table"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { RefreshCcw, Upload, Play, Square, Info } from "lucide-react"
+import { RefreshCcw, Upload, Play, Square } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { toast } from "sonner"
 import axios from "axios"
-import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
+import { Area, AreaChart, CartesianGrid, Legend, Tooltip, XAxis } from "recharts"
 import {
   ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
-  ChartTooltip,
-  ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
+
 import {
   Select,
   SelectContent,
@@ -66,11 +63,11 @@ interface TimelinePoint {
 type TimeRange = "90d" | "30d" | "7d"
 
 const chartConfig = {
-  desktop: {
+  sessions: {
     label: "Sessions",
     color: "var(--chart-1)",
   },
-  mobile: {
+  duration: {
     label: "Avg Duration (min)",
     color: "var(--chart-2)",
   },
@@ -219,8 +216,8 @@ export default function Dashboard() {
       .filter((point) => new Date(point.date) >= cutoff)
       .map((point) => ({
         date: point.date,
-        desktop: point.total_sessions,
-        mobile: Number((point.average_session_duration_seconds / 60).toFixed(1)),
+        sessions: point.total_sessions,
+        duration: Number((point.average_session_duration_seconds / 60).toFixed(1)),
       }))
   }, [timelineData, timeRange])
 
@@ -512,13 +509,13 @@ export default function Dashboard() {
             >
               <AreaChart data={filteredData}>
                 <defs>
-                  <linearGradient id="fillDesktop" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-desktop)" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="var(--color-desktop)" stopOpacity={0.1} />
+                  <linearGradient id="fillSessions" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-sessions)" stopOpacity={0.8} />
+                    <stop offset="95%" stopColor="var(--color-sessions)" stopOpacity={0.1} />
                   </linearGradient>
-                  <linearGradient id="fillMobile" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-mobile)" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="var(--color-mobile)" stopOpacity={0.1} />
+                  <linearGradient id="fillDuration" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-duration)" stopOpacity={0.8} />
+                    <stop offset="95%" stopColor="var(--color-duration)" stopOpacity={0.1} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid vertical={false} />
@@ -536,37 +533,37 @@ export default function Dashboard() {
                     })
                   }}
                 />
-                <ChartTooltip
+                <Tooltip
                   cursor={false}
-                  content={
-                    <ChartTooltipContent
-                      labelFormatter={(value) => {
-                        return new Date(value).toLocaleDateString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                        })
-                      }}
-                      indicator="dot"
-                    />
-                  }
+                  labelFormatter={(value) => {
+                    return new Date(value).toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                    })
+                  }}
+                  formatter={(value, name) => {
+                    if (name === "duration") return [`${Number(value).toFixed(1)} min`, "Avg Duration"]
+                    return [Number(value).toLocaleString(), "Sessions"]
+                  }}
+                  contentStyle={{ borderRadius: 12 }}
                 />
                 <Area
-                  dataKey="mobile"
+                  dataKey="duration"
                   type="natural"
-                  fill="url(#fillMobile)"
-                  stroke="var(--color-mobile)"
+                  fill="url(#fillDuration)"
+                  stroke="var(--color-duration)"
                   fillOpacity={0.55}
                   strokeWidth={2}
                 />
                 <Area
-                  dataKey="desktop"
+                  dataKey="sessions"
                   type="natural"
-                  fill="url(#fillDesktop)"
-                  stroke="var(--color-desktop)"
+                  fill="url(#fillSessions)"
+                  stroke="var(--color-sessions)"
                   fillOpacity={0.45}
                   strokeWidth={2}
                 />
-                <ChartLegend content={<ChartLegendContent />} />
+                <Legend />
               </AreaChart>
             </ChartContainer>
           )}
