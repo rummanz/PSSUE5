@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Table,
   TableBody,
@@ -18,7 +18,22 @@ import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { toast } from "sonner"
 import axios from "axios"
-import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
+import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 interface ServerStatus {
   address: string
@@ -48,6 +63,19 @@ interface TimelinePoint {
   average_session_duration_seconds: number
 }
 
+type TimeRange = "90d" | "30d" | "7d"
+
+const chartConfig = {
+  sessions: {
+    label: "Sessions",
+    color: "var(--chart-1)",
+  },
+  duration: {
+    label: "Avg Duration (min)",
+    color: "var(--chart-2)",
+  },
+} satisfies ChartConfig
+
 export default function Dashboard() {
   const [servers, setServers] = useState<ServerStatus[]>([])
   const [loading, setLoading] = useState(true)
@@ -55,6 +83,7 @@ export default function Dashboard() {
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadStage, setUploadStage] = useState<"idle" | "uploading" | "processing">("idle")
+  const [timeRange, setTimeRange] = useState<TimeRange>("30d")
   const [timelineData, setTimelineData] = useState<TimelinePoint[]>([])
   const [file, setFile] = useState<File | null>(null)
   const processingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -180,6 +209,20 @@ export default function Dashboard() {
   const totalSessions = servers.reduce((acc, s) => acc + (s.stats?.total_sessions || 0), 0);
   const globalTotalDuration = servers.reduce((acc, s) => acc + (s.stats?.total_duration_seconds || 0), 0);
   const globalAvgDuration = totalSessions > 0 ? globalTotalDuration / totalSessions : 0;
+
+  const filteredData = useMemo(() => {
+    const days = timeRange === "90d" ? 90 : timeRange === "30d" ? 30 : 7
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - days)
+
+    return timelineData
+      .filter((point) => new Date(point.date) >= cutoff)
+      .map((point) => ({
+        date: point.date,
+        sessions: point.total_sessions,
+        duration: point.average_session_duration_seconds / 60,
+      }))
+  }, [timelineData, timeRange])
 
 
   const handleUpload = async () => {
@@ -437,67 +480,99 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Session Trend (Last 14 Days)</CardTitle>
-          <CardDescription>Aggregated sessions and total session duration across all connected game servers.</CardDescription>
+      <Card className="pt-0">
+        <CardHeader className="flex items-center gap-2 space-y-0 border-b py-5 sm:flex-row">
+          <div className="grid flex-1 gap-1">
+            <CardTitle>Area Chart - Interactive</CardTitle>
+            <CardDescription>
+              Showing sessions and average duration for the selected range
+            </CardDescription>
+          </div>
+          <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
+            <SelectTrigger
+              className="hidden w-[160px] rounded-lg sm:ml-auto sm:flex"
+              aria-label="Select a value"
+            >
+              <SelectValue placeholder="Last 30 days" />
+            </SelectTrigger>
+            <SelectContent className="rounded-xl">
+              <SelectItem value="90d" className="rounded-lg">Last 3 months</SelectItem>
+              <SelectItem value="30d" className="rounded-lg">Last 30 days</SelectItem>
+              <SelectItem value="7d" className="rounded-lg">Last 7 days</SelectItem>
+            </SelectContent>
+          </Select>
         </CardHeader>
-        <CardContent>
-          {timelineData.length === 0 ? (
+        <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+          {filteredData.length === 0 ? (
             <p className="text-sm text-muted-foreground">No timeline data available yet.</p>
           ) : (
-            <div className="h-[280px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={timelineData}>
-                  <defs>
-                    <linearGradient id="fillSessions" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.8} />
-                      <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0.1} />
-                    </linearGradient>
-                    <linearGradient id="fillDuration" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--chart-2)" stopOpacity={0.8} />
-                      <stop offset="95%" stopColor="var(--chart-2)" stopOpacity={0.1} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis
-                    dataKey="date"
-                    tickFormatter={(value: string) => new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                    minTickGap={24}
-                  />
-                  <YAxis yAxisId="left" allowDecimals={false} />
-                  <YAxis yAxisId="right" orientation="right" tickFormatter={(value: number) => `${Math.round(value)}m`} />
-                  <Tooltip
-                    formatter={(value: number, name: string) => {
-                      if (name === "Total Duration (min)") {
-                        return [`${value.toFixed(1)} min`, name]
-                      }
-                      return [value, name]
-                    }}
-                    labelFormatter={(label: string) => new Date(label).toLocaleDateString()}
-                  />
-                  <Legend />
-                  <Area
-                    type="monotone"
-                    dataKey="total_sessions"
-                    yAxisId="left"
-                    name="Sessions"
-                    stroke="var(--chart-1)"
-                    fill="url(#fillSessions)"
-                    strokeWidth={2}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="total_duration_minutes"
-                    yAxisId="right"
-                    name="Total Duration (min)"
-                    stroke="var(--chart-2)"
-                    fill="url(#fillDuration)"
-                    strokeWidth={2}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            <ChartContainer
+              config={chartConfig}
+              className="aspect-auto h-[250px] w-full"
+            >
+              <AreaChart data={filteredData}>
+                <defs>
+                  <linearGradient id="fillSessions" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-sessions)" stopOpacity={0.8} />
+                    <stop offset="95%" stopColor="var(--color-sessions)" stopOpacity={0.1} />
+                  </linearGradient>
+                  <linearGradient id="fillDuration" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-duration)" stopOpacity={0.8} />
+                    <stop offset="95%" stopColor="var(--color-duration)" stopOpacity={0.1} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  tickLine={false}
+                  axisLine={false}
+                  tickMargin={8}
+                  minTickGap={32}
+                  tickFormatter={(value) => {
+                    const date = new Date(value)
+                    return date.toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                    })
+                  }}
+                />
+                <ChartTooltip
+                  cursor={false}
+                  content={
+                    <ChartTooltipContent
+                      labelFormatter={(value) => {
+                        return new Date(value).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        })
+                      }}
+                      formatter={(value, name) => {
+                        if (name === "Avg Duration (min)") {
+                          return `${Number(value).toFixed(1)} min`
+                        }
+                        return Number(value).toLocaleString()
+                      }}
+                      indicator="dot"
+                    />
+                  }
+                />
+                <Area
+                  dataKey="duration"
+                  type="natural"
+                  fill="url(#fillDuration)"
+                  stroke="var(--color-duration)"
+                  stackId="a"
+                />
+                <Area
+                  dataKey="sessions"
+                  type="natural"
+                  fill="url(#fillSessions)"
+                  stroke="var(--color-sessions)"
+                  stackId="a"
+                />
+                <ChartLegend content={<ChartLegendContent />} />
+              </AreaChart>
+            </ChartContainer>
           )}
         </CardContent>
       </Card>
