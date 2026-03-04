@@ -368,12 +368,12 @@ export default function Dashboard() {
                 <AreaChart data={timelineData}>
                   <defs>
                     <linearGradient id="sessionsGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0.05} />
+                      <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.05} />
                     </linearGradient>
                     <linearGradient id="durationGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--chart-2))" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="hsl(var(--chart-2))" stopOpacity={0.05} />
+                      <stop offset="5%" stopColor="var(--chart-2)" stopOpacity={0.45} />
+                      <stop offset="95%" stopColor="var(--chart-2)" stopOpacity={0.12} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
@@ -383,7 +383,7 @@ export default function Dashboard() {
                     minTickGap={24}
                   />
                   <YAxis yAxisId="left" allowDecimals={false} />
-                  <YAxis yAxisId="right" orientation="right" />
+                  <YAxis yAxisId="right" orientation="right" tickFormatter={(value: number) => `${Math.round(value)}m`} />
                   <Tooltip
                     formatter={(value: number, name: string) => {
                       if (name === "Total Duration (min)") {
@@ -399,7 +399,7 @@ export default function Dashboard() {
                     dataKey="total_sessions"
                     yAxisId="left"
                     name="Sessions"
-                    stroke="hsl(var(--primary))"
+                    stroke="var(--primary)"
                     fill="url(#sessionsGradient)"
                     strokeWidth={2}
                   />
@@ -408,9 +408,10 @@ export default function Dashboard() {
                     dataKey="total_duration_minutes"
                     yAxisId="right"
                     name="Total Duration (min)"
-                    stroke="hsl(var(--chart-2))"
+                    stroke="var(--chart-2)"
                     fill="url(#durationGradient)"
-                    strokeWidth={2}
+                    strokeWidth={3}
+                    fillOpacity={0.35}
                   />
                 </AreaChart>
               </ResponsiveContainer>
