@@ -12,6 +12,8 @@ import pefile
 import sqlite3
 import datetime
 import socket
+import time
+import threading
 
 # Configure Logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -41,6 +43,22 @@ GAME_DIRECTORY = config.get("gameDirectory", "")
 
 # Initialize Database
 DB_FILE = "stats.db"
+DB_TIMEOUT_SECONDS = 1.0
+HEARTBEAT_MIN_INTERVAL_SECONDS = 30
+
+_heartbeat_lock = threading.Lock()
+_last_heartbeat_by_pid: dict[int, float] = {}
+
+_version_cache_lock = threading.Lock()
+_version_cache = {
+    "exe_path": None,
+    "mtime": None,
+    "version": "Unknown",
+    "product_version": "Unknown"
+}
+
+def get_db_connection() -> sqlite3.Connection:
+    return sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT_SECONDS)
 
 def get_local_ip() -> str:
     """Best-effort local IP detection for startup log message."""
@@ -56,8 +74,10 @@ def get_local_ip() -> str:
 
 def init_db():
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
+        cursor.execute('PRAGMA journal_mode=WAL')
+        cursor.execute('PRAGMA synchronous=NORMAL')
         # Process sessions (uptime)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS sessions (
@@ -78,6 +98,7 @@ def init_db():
                 duration INTEGER
             )
         ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_player_sessions_start_time ON player_sessions(start_time)')
         conn.commit()
         conn.close()
     except Exception as e:
@@ -88,7 +109,7 @@ init_db()
 # ... (Previous logging functions for process sessions kept as is) ...
 def log_session_start():
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         now = datetime.datetime.now()
         now_str = now.isoformat()
@@ -99,8 +120,15 @@ def log_session_start():
         logger.error(f"Failed to log session start: {e}")
 
 def log_session_heartbeat(pid):
+    now_ts = time.time()
+    with _heartbeat_lock:
+        last_ts = _last_heartbeat_by_pid.get(pid)
+        if last_ts and (now_ts - last_ts) < HEARTBEAT_MIN_INTERVAL_SECONDS:
+            return
+        _last_heartbeat_by_pid[pid] = now_ts
+
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         now = datetime.datetime.now()
         now_str = now.isoformat()
@@ -111,12 +139,15 @@ def log_session_heartbeat(pid):
         ''', (now_str,))
         conn.commit()
         conn.close()
+    except sqlite3.OperationalError as e:
+        # Heartbeat is best-effort and should never slow down /version.
+        logger.error(f"Heartbeat DB operation skipped: {e}")
     except Exception as e:
         logger.error(f"Failed to log heartbeat: {e}")
 
 def log_session_stop():
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         now = datetime.datetime.now()
         now_str = now.isoformat()
@@ -159,7 +190,7 @@ class PlayerSessionData(BaseModel):
 def record_player_session(data: PlayerSessionData):
     """Records a player session sent by the Signalling Server."""
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         # Convert timestamps to datetime objects
         start_dt = datetime.datetime.fromtimestamp(data.start_time / 1000.0)
@@ -184,7 +215,7 @@ def record_player_session(data: PlayerSessionData):
 def get_stats():
     """Returns aggregated session statistics (Player Sessions)."""
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # We now prioritize PLAYER sessions as that's what the user asked for ("game has been played")
@@ -207,13 +238,18 @@ def get_stats():
     except Exception as e:
         logger.error(f"Failed to fetch stats: {e}")
         return {"error": str(e)}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 @app.get("/stats/timeline")
 def get_stats_timeline(days: int = 14):
     """Returns daily player-session aggregates for charting."""
     try:
         days = max(1, min(days, 90))
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
 
         start_date = (datetime.datetime.now() - datetime.timedelta(days=days - 1)).date().isoformat()
@@ -264,6 +300,51 @@ def get_stats_timeline(days: int = 14):
         logger.error(f"Failed to fetch timeline stats: {e}")
         return {"error": str(e)}
 
+def get_cached_file_versions() -> tuple[str, str]:
+    if not GAME_EXECUTABLE or not os.path.exists(GAME_EXECUTABLE):
+        return ("Unknown", "Unknown")
+
+    try:
+        mtime = os.path.getmtime(GAME_EXECUTABLE)
+    except Exception:
+        mtime = None
+
+    with _version_cache_lock:
+        if (
+            _version_cache["exe_path"] == GAME_EXECUTABLE
+            and _version_cache["mtime"] == mtime
+        ):
+            return (_version_cache["version"], _version_cache["product_version"])
+
+    version = "Unknown"
+    product_version = "Unknown"
+
+    try:
+        pe = pefile.PE(GAME_EXECUTABLE)
+        try:
+            if hasattr(pe, 'VS_FIXEDFILEINFO') and pe.VS_FIXEDFILEINFO:
+                ver_info = pe.VS_FIXEDFILEINFO[0]
+                version = f"{ver_info.FileVersionMS >> 16}.{ver_info.FileVersionMS & 0xFFFF}.{ver_info.FileVersionLS >> 16}.{ver_info.FileVersionLS & 0xFFFF}"
+                product_version = f"{ver_info.ProductVersionMS >> 16}.{ver_info.ProductVersionMS & 0xFFFF}.{ver_info.ProductVersionLS >> 16}.{ver_info.ProductVersionLS & 0xFFFF}"
+        finally:
+            pe.close()
+    except Exception as e:
+        logger.error(f"Failed to read version: {e}")
+        version = "Error reading version"
+
+    with _version_cache_lock:
+        _version_cache["exe_path"] = GAME_EXECUTABLE
+        _version_cache["mtime"] = mtime
+        _version_cache["version"] = version
+        _version_cache["product_version"] = product_version
+
+    return (version, product_version)
+
+@app.get("/health")
+def health_check():
+    """Quick health endpoint for network/connectivity checks."""
+    return {"ok": True, "time": datetime.datetime.utcnow().isoformat() + "Z"}
+
 @app.get("/version")
 def get_version():
     """Returns the version, PID, and running status."""
@@ -289,21 +370,9 @@ def get_version():
         response["status"] = "Executable Missing"
         return response
     
-    # Check File Version
-    try:
-        pe = pefile.PE(GAME_EXECUTABLE)
-        try:
-            if hasattr(pe, 'VS_FIXEDFILEINFO'):
-                ver_info = pe.VS_FIXEDFILEINFO[0]
-                file_ver = f"{ver_info.FileVersionMS >> 16}.{ver_info.FileVersionMS & 0xFFFF}.{ver_info.FileVersionLS >> 16}.{ver_info.FileVersionLS & 0xFFFF}"
-                product_ver = f"{ver_info.ProductVersionMS >> 16}.{ver_info.ProductVersionMS & 0xFFFF}.{ver_info.ProductVersionLS >> 16}.{ver_info.ProductVersionLS & 0xFFFF}"
-                response["version"] = file_ver
-                response["product_version"] = product_ver
-        finally:
-            pe.close()
-    except Exception as e:
-        logger.error(f"Failed to read version: {e}")
-        response["version"] = "Error reading version"
+    file_ver, product_ver = get_cached_file_versions()
+    response["version"] = file_ver
+    response["product_version"] = product_ver
 
     return response
 

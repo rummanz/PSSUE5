@@ -17,6 +17,8 @@ const defaultConfig = {
 	// GameManager API fan-out settings
 	GameManagerPort: 8000,
 	GameManagerTimeoutMs: 8000,
+	GameManagerFailureBackoffBaseMs: 5000,
+	GameManagerFailureBackoffMaxMs: 30000,
 };
 
 // Similar to the Signaling Server (SS) code, load in a config.json file for the MM parameters
@@ -160,6 +162,9 @@ if (enableRESTAPI) {
 	const FormData = require('form-data');
 	const gameManagerPort = config.GameManagerPort || 8000;
 	const gameManagerTimeoutMs = config.GameManagerTimeoutMs || 8000;
+	const gameManagerFailureBackoffBaseMs = config.GameManagerFailureBackoffBaseMs || 5000;
+	const gameManagerFailureBackoffMaxMs = config.GameManagerFailureBackoffMaxMs || 30000;
+	const gameManagerHealth = new Map();
 
 	const gameManagerClient = axios.create({
 		timeout: gameManagerTimeoutMs,
@@ -188,7 +193,20 @@ if (enableRESTAPI) {
 		return [...uniqueAddresses];
 	}
 
-	async function requestGameManager(ip, endpoint, method, data = null, file = null) {
+	async function requestGameManager(ip, endpoint, method, data = null, file = null, options = {}) {
+		const ignoreBackoff = options.ignoreBackoff === true;
+		const now = Date.now();
+		const health = gameManagerHealth.get(ip);
+
+		if (!ignoreBackoff && health && health.nextAttemptAt && now < health.nextAttemptAt) {
+			return {
+				ip: ip,
+				status: 'failed',
+				elapsedMs: 0,
+				error: `Backoff active until ${new Date(health.nextAttemptAt).toISOString()}`
+			};
+		}
+
 		const url = `http://${ip}:${gameManagerPort}${endpoint}`;
 		const startedAt = Date.now();
 
@@ -210,6 +228,15 @@ if (enableRESTAPI) {
 
 			if (!success) {
 				console.error(`GameManager request failed ${url} -> HTTP ${response.status}`);
+				const current = gameManagerHealth.get(ip) || { failures: 0, nextAttemptAt: 0 };
+				const failures = current.failures + 1;
+				const backoffMs = Math.min(gameManagerFailureBackoffMaxMs, failures * gameManagerFailureBackoffBaseMs);
+				gameManagerHealth.set(ip, {
+					failures,
+					nextAttemptAt: Date.now() + backoffMs
+				});
+			} else {
+				gameManagerHealth.set(ip, { failures: 0, nextAttemptAt: 0 });
 			}
 
 			return {
@@ -223,6 +250,14 @@ if (enableRESTAPI) {
 		} catch (error) {
 			const errorMessage = error.code ? `${error.code}: ${error.message}` : error.message;
 			console.error(`Failed to contact ${url}: ${errorMessage}`);
+			const current = gameManagerHealth.get(ip) || { failures: 0, nextAttemptAt: 0 };
+			const failures = current.failures + 1;
+			const backoffMs = Math.min(gameManagerFailureBackoffMaxMs, failures * gameManagerFailureBackoffBaseMs);
+			gameManagerHealth.set(ip, {
+				failures,
+				nextAttemptAt: Date.now() + backoffMs
+			});
+
 			return {
 				ip: ip,
 				status: 'failed',
@@ -333,7 +368,7 @@ if (enableRESTAPI) {
 		}
 
 		console.log(`Sending command ${command} to ${serverAddress}`);
-		const result = await requestGameManager(serverAddress, `/${command}`, 'POST');
+		const result = await requestGameManager(serverAddress, `/${command}`, 'POST', null, null, { ignoreBackoff: true });
 		const statusCode = result.status === 'success' ? 200 : 502;
 		return res.status(statusCode).json(result);
 	});
