@@ -13,6 +13,10 @@ const defaultConfig = {
 	LogToFile: true,
 
 	EnableWebserver: true,
+
+	// GameManager API fan-out settings
+	GameManagerPort: 8000,
+	GameManagerTimeoutMs: 8000,
 };
 
 // Similar to the Signaling Server (SS) code, load in a config.json file for the MM parameters
@@ -145,17 +149,7 @@ if (enableRESTAPI) {
 
 	// Handle REST status request
 	app.get('/api/status', cors(), (req, res) => {
-		let servers = [];
-		for (cirrusServer of cirrusServers.values()) {
-			servers.push({
-				address: cirrusServer.address,
-				port: cirrusServer.port,
-				ready: cirrusServer.ready,
-				numConnectedClients: cirrusServer.numConnectedClients,
-				lastPingReceived: cirrusServer.lastPingReceived
-			});
-		}
-		res.json({ servers: servers });
+		res.json({ servers: getStatusServers() });
 	});
 
 	// Game Management APIs
@@ -164,40 +158,138 @@ if (enableRESTAPI) {
 	const axios = require('axios');
 	const fs = require('fs');
 	const FormData = require('form-data');
+	const gameManagerPort = config.GameManagerPort || 8000;
+	const gameManagerTimeoutMs = config.GameManagerTimeoutMs || 8000;
 
-	// Helper to broadcast to all connected Game VMs (Agent Port 8000)
-	async function broadcastToGames(endpoint, method, data = null, file = null) {
-		const results = [];
+	const gameManagerClient = axios.create({
+		timeout: gameManagerTimeoutMs,
+		validateStatus: () => true
+	});
+
+	function getStatusServers() {
+		let servers = [];
+		for (const cirrusServer of cirrusServers.values()) {
+			servers.push({
+				address: cirrusServer.address,
+				port: cirrusServer.port,
+				ready: cirrusServer.ready,
+				numConnectedClients: cirrusServer.numConnectedClients,
+				lastPingReceived: cirrusServer.lastPingReceived
+			});
+		}
+		return servers;
+	}
+
+	function getUniqueAddresses() {
 		const uniqueAddresses = new Set();
-
-		// Filter unique IPs
 		for (const server of cirrusServers.values()) {
 			uniqueAddresses.add(server.address);
 		}
-
-		for (const ip of uniqueAddresses) {
-			const url = `http://${ip}:8000${endpoint}`;
-			try {
-				let response;
-				if (file) {
-					const form = new FormData();
-					form.append('file', fs.createReadStream(file.path), file.originalname);
-					response = await axios.post(url, form, {
-						headers: { ...form.getHeaders() }
-					});
-				} else if (method === 'POST') {
-					response = await axios.post(url, data);
-				} else {
-					response = await axios.get(url);
-				}
-				results.push({ ip: ip, status: 'success', data: response.data });
-			} catch (error) {
-				console.error(`Failed to broadcast to ${url}: ${error.message}`);
-				results.push({ ip: ip, status: 'failed', error: error.message });
-			}
-		}
-		return results;
+		return [...uniqueAddresses];
 	}
+
+	async function requestGameManager(ip, endpoint, method, data = null, file = null) {
+		const url = `http://${ip}:${gameManagerPort}${endpoint}`;
+		const startedAt = Date.now();
+
+		try {
+			let response;
+			if (file) {
+				const form = new FormData();
+				form.append('file', fs.createReadStream(file.path), file.originalname);
+				response = await gameManagerClient.post(url, form, {
+					headers: { ...form.getHeaders() }
+				});
+			} else if (method === 'POST') {
+				response = await gameManagerClient.post(url, data || {});
+			} else {
+				response = await gameManagerClient.get(url);
+			}
+
+			const success = response.status >= 200 && response.status < 300;
+
+			if (!success) {
+				console.error(`GameManager request failed ${url} -> HTTP ${response.status}`);
+			}
+
+			return {
+				ip: ip,
+				status: success ? 'success' : 'failed',
+				httpStatus: response.status,
+				elapsedMs: Date.now() - startedAt,
+				data: response.data,
+				error: success ? undefined : `HTTP ${response.status}`
+			};
+		} catch (error) {
+			const errorMessage = error.code ? `${error.code}: ${error.message}` : error.message;
+			console.error(`Failed to contact ${url}: ${errorMessage}`);
+			return {
+				ip: ip,
+				status: 'failed',
+				elapsedMs: Date.now() - startedAt,
+				error: errorMessage
+			};
+		}
+	}
+
+	// Helper to broadcast to all connected Game VMs (Agent Port 8000)
+	async function broadcastToGames(endpoint, method, data = null, file = null) {
+		const targets = getUniqueAddresses();
+		const requests = targets.map((ip) => requestGameManager(ip, endpoint, method, data, file));
+		return Promise.all(requests);
+	}
+
+	app.get('/api/game/status', cors(), async (req, res) => {
+		console.log('Fetching combined game status...');
+		const [versionResults, statsResults] = await Promise.all([
+			broadcastToGames('/version', 'GET'),
+			broadcastToGames('/stats', 'GET')
+		]);
+
+		const versionByIp = new Map();
+		for (const item of versionResults) {
+			versionByIp.set(item.ip, item);
+		}
+
+		const statsByIp = new Map();
+		for (const item of statsResults) {
+			statsByIp.set(item.ip, item);
+		}
+
+		const servers = getStatusServers().map((server) => {
+			const versionResult = versionByIp.get(server.address);
+			const statsResult = statsByIp.get(server.address);
+
+			return {
+				...server,
+				version: versionResult?.data?.version || 'Unknown',
+				pid: versionResult?.data?.pid || null,
+				is_running: versionResult?.data?.is_running || false,
+				stats: statsResult?.status === 'success' ? statsResult.data : null,
+				api: {
+					version: versionResult ? {
+						status: versionResult.status,
+						error: versionResult.error,
+						httpStatus: versionResult.httpStatus,
+						elapsedMs: versionResult.elapsedMs
+					} : null,
+					stats: statsResult ? {
+						status: statsResult.status,
+						error: statsResult.error,
+						httpStatus: statsResult.httpStatus,
+						elapsedMs: statsResult.elapsedMs
+					} : null
+				}
+			};
+		});
+
+		res.json({
+			servers,
+			versionResults,
+			statsResults,
+			timeoutMs: gameManagerTimeoutMs
+		});
+	});
 
 	app.options('/api/game/upload', cors()); // Enable pre-flight request for upload
 	app.post('/api/game/upload', cors(), upload.single('file'), async (req, res) => {
@@ -225,6 +317,25 @@ if (enableRESTAPI) {
 		console.log(`Broadcasting command: ${command}`);
 		const results = await broadcastToGames(`/${command}`, 'POST');
 		res.json({ results: results });
+	});
+
+	app.post('/api/game/server/:serverAddress/:command', cors(), async (req, res) => {
+		const serverAddress = decodeURIComponent(req.params.serverAddress || '');
+		const command = req.params.command;
+
+		if (!command || !['start', 'stop'].includes(command)) {
+			return res.status(400).send('Invalid command');
+		}
+
+		const isKnownServer = [...cirrusServers.values()].some((s) => s.address === serverAddress);
+		if (!isKnownServer) {
+			return res.status(404).json({ error: `Unknown server address: ${serverAddress}` });
+		}
+
+		console.log(`Sending command ${command} to ${serverAddress}`);
+		const result = await requestGameManager(serverAddress, `/${command}`, 'POST');
+		const statusCode = result.status === 'success' ? 200 : 502;
+		return res.status(statusCode).json(result);
 	});
 
 	app.get('/api/game/version', cors(), async (req, res) => {

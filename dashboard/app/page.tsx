@@ -76,6 +76,7 @@ const chartConfig = {
 export default function Dashboard() {
   const [servers, setServers] = useState<ServerStatus[]>([])
   const [loading, setLoading] = useState(true)
+  const [serverActionLoading, setServerActionLoading] = useState<Record<string, boolean>>({})
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -104,42 +105,11 @@ export default function Dashboard() {
   const fetchLiveData = async () => {
     try {
       setLoading(true)
-      const [statusRes, versionRes, statsRes] = await Promise.all([
-        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/status`),
-        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/version`),
-        fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/stats`)
-      ])
+      const statusRes = await fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/status`)
 
       if (statusRes.ok) {
         const statusData: StatusResponse = await statusRes.json()
-        let updatedServers = statusData.servers
-
-        let versionResults: any[] = []
-        if (versionRes.ok) {
-          const vData = await versionRes.json()
-          versionResults = vData.results || []
-        }
-
-        let statsResults: any[] = []
-        if (statsRes.ok) {
-          const sData = await statsRes.json()
-          statsResults = sData.results || []
-        }
-
-        updatedServers = updatedServers.map((server: ServerStatus) => {
-          const vInfo = versionResults.find((r: any) => r.ip === server.address)
-          const sInfo = statsResults.find((r: any) => r.ip === server.address)
-
-          return {
-            ...server,
-            version: vInfo?.data?.version || "Unknown",
-            pid: vInfo?.data?.pid || null,
-            is_running: vInfo?.data?.is_running || false,
-            stats: sInfo?.data || null
-          }
-        })
-
-        setServers(updatedServers)
+        setServers(statusData.servers || [])
         setLastUpdated(new Date())
       } else {
         console.error("Failed to fetch status")
@@ -197,10 +167,6 @@ export default function Dashboard() {
       setTimelineData([])
     }
   }
-
-  // Calculate global states
-  const allRunning = servers.length > 0 && servers.every(s => s.is_running);
-  const allStopped = servers.length > 0 && servers.every(s => !s.is_running);
 
   // Stats aggregation
   const totalSessions = servers.reduce((acc, s) => acc + (s.stats?.total_sessions || 0), 0);
@@ -279,25 +245,33 @@ export default function Dashboard() {
     }
   }, [])
 
-  const handleCommand = async (command: "start" | "stop") => {
+  const getServerKey = (server: ServerStatus) => `${server.address}:${server.port}`
+
+  const handleServerCommand = async (server: ServerStatus, command: "start" | "stop") => {
+    const key = getServerKey(server)
+
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/broadcast`, {
+      setServerActionLoading((prev) => ({ ...prev, [key]: true }))
+
+      const response = await fetch(`${process.env.NEXT_PUBLIC_MATCHMAKER_URL}/api/game/server/${encodeURIComponent(server.address)}/${command}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command }),
       })
 
       if (response.ok) {
-        const data = await response.json()
-        toast.success(`Game ${command} command sent`, {
-          description: `Sent to ${data.results.length} servers`
+        toast.success(`${command === "start" ? "Start" : "Stop"} sent`, {
+          description: `${server.address}:${server.port}`
         })
         fetchLiveData() // Update UI immediately
       } else {
-        toast.error(`Failed to send ${command} command`)
+        const errorData = await response.json().catch(() => ({}))
+        toast.error(`Failed to ${command} ${server.address}`, {
+          description: errorData?.error || "Request failed"
+        })
       }
-    } catch (error) {
-      toast.error(`Error sending ${command} command`)
+    } catch {
+      toast.error(`Error sending ${command} to ${server.address}`)
+    } finally {
+      setServerActionLoading((prev) => ({ ...prev, [key]: false }))
     }
   }
 
@@ -346,12 +320,13 @@ export default function Dashboard() {
                   <TableHead>Game Process</TableHead>
                   <TableHead>Sessions</TableHead>
                   <TableHead>Avg Duration</TableHead>
+                  <TableHead>Control</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {servers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-24 text-center">
+                    <TableCell colSpan={8} className="h-24 text-center">
                       No servers connected.
                     </TableCell>
                   </TableRow>
@@ -376,6 +351,26 @@ export default function Dashboard() {
                       </TableCell>
                       <TableCell>{server.stats?.total_sessions || 0}</TableCell>
                       <TableCell>{(server.stats?.average_session_duration_seconds || 0).toFixed(0)}s</TableCell>
+                      <TableCell>
+                        <Button
+                          size="sm"
+                          variant={server.is_running ? "destructive" : "default"}
+                          disabled={!!serverActionLoading[getServerKey(server)]}
+                          onClick={() => handleServerCommand(server, server.is_running ? "stop" : "start")}
+                        >
+                          {serverActionLoading[getServerKey(server)] ? (
+                            <RefreshCcw className="h-4 w-4 animate-spin" />
+                          ) : server.is_running ? (
+                            <>
+                              <Square className="h-4 w-4 mr-2" /> Stop
+                            </>
+                          ) : (
+                            <>
+                              <Play className="h-4 w-4 mr-2" /> Start
+                            </>
+                          )}
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   ))
                 )}
@@ -389,10 +384,10 @@ export default function Dashboard() {
       <Card>
         <CardHeader>
           <CardTitle>Game Management</CardTitle>
-          <CardDescription>Upload builds and control game processes across all servers.</CardDescription>
+          <CardDescription>Upload builds to all connected servers.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-6 md:grid-cols-2">
+          <div className="grid gap-6 md:grid-cols-1">
             <div className="space-y-4">
               <Label htmlFor="game-build">Upload Game Build (.zip)</Label>
               <div className="flex gap-2">
@@ -426,29 +421,6 @@ export default function Dashboard() {
                   </p>
                 </>
               )}
-            </div>
-
-            <div className="space-y-4">
-              <Label>Process Control (Broadcast All)</Label>
-              <div className="flex gap-2">
-                <Button
-                  onClick={() => handleCommand("start")}
-                  variant="default"
-                  disabled={allRunning}
-                >
-                  <Play className="h-4 w-4 mr-2" /> Start All
-                </Button>
-                <Button
-                  onClick={() => handleCommand("stop")}
-                  variant="destructive"
-                  disabled={allStopped}
-                >
-                  <Square className="h-4 w-4 mr-2" /> Stop All
-                </Button>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {allRunning ? "All servers are running." : allStopped ? "All servers are stopped." : "Mixed server states."}
-              </p>
             </div>
           </div>
         </CardContent>
