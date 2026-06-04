@@ -3,5 +3,9 @@
 	"UseHTTPS": false,
 	"MatchmakerPort": 9999,
 	"LogToFile": true,
-	"EnableWebserver": true
+	"EnableWebserver": true,
+	"GameManagerPort": 8000,
+	"GameManagerTimeoutMs": 20000,
+	"GameManagerFailureBackoffBaseMs": 5000,
+	"GameManagerFailureBackoffMaxMs": 30000
 }
